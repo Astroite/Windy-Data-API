@@ -36,10 +36,13 @@ const HOUR = 3600000;
 const MIN_FINITE_RATIO = 0.98;
 
 // Snapshot grids consumed by the client (row-major: rows lat south->north, cols lon west->east,
-// matching WW.grid points()). "fine" must stay inside "wide" so the client can layer them.
+// matching WW.grid points()). Domains sized for Web Mercator view spans: a 1920px window at
+// zoom 5 spans ~84 deg lon (~118 padded) -> "global" serves default region views; zoom >= 6
+// fits "wide". Client layer constants in js/weather/api-snapshot.js must mirror this list.
+// Read order matters: "global" first so its cached blocks serve "wide" reads for free.
 const GRIDS = [
-  { id: "wide", lat0: 0, lon0: 100, step: 1.0, ny: 46, nx: 61 },
-  { id: "fine", lat0: 15, lon0: 105, step: 0.5, ny: 31, nx: 41 }
+  { id: "global", lat0: -60, lon0: -180, step: 2.5, ny: 53, nx: 144 },
+  { id: "wide", lat0: -15, lon0: 75, step: 1.0, ny: 66, nx: 106 }
 ];
 
 const VARS = ["wind_u_component_10m", "wind_v_component_10m", "temperature_2m", "precipitation"];
@@ -310,16 +313,16 @@ async function main() {
     model: MODEL,
     run: runPath(weather.run.referenceMs),
     files: {
+      global: "/v1/grid-global.json",
       wide: "/v1/grid-wide.json",
-      fine: "/v1/grid-fine.json",
       storms: "/v1/storms.json"
     }
   };
   const write = (name, obj) => writeFile(`dist/v1/${name}`, JSON.stringify(obj));
   await Promise.all([
     write("meta.json", meta),
+    write("grid-global.json", weather.files.global),
     write("grid-wide.json", weather.files.wide),
-    write("grid-fine.json", weather.files.fine),
     write("storms.json", {
       schemaVersion: SCHEMA_VERSION,
       generatedAt: Math.floor(Date.now() / 1000),
@@ -335,8 +338,8 @@ async function main() {
       "dist/index.html",
       `<!doctype html><meta charset="utf-8"><title>Typhoon Watch data snapshots</title>` +
         `<pre>Typhoon Watch weather snapshots\nrun ${meta.run} / generated ${new Date(weather.generatedAt * 1000).toISOString()}\n\n` +
-        `<a href="/v1/meta.json">/v1/meta.json</a>\n<a href="/v1/grid-wide.json">/v1/grid-wide.json</a>\n` +
-        `<a href="/v1/grid-fine.json">/v1/grid-fine.json</a>\n<a href="/v1/storms.json">/v1/storms.json</a>\n` +
+        `<a href="/v1/meta.json">/v1/meta.json</a>\n<a href="/v1/grid-global.json">/v1/grid-global.json</a>\n` +
+        `<a href="/v1/grid-wide.json">/v1/grid-wide.json</a>\n<a href="/v1/storms.json">/v1/storms.json</a>\n` +
         `<a href="/v1/attribution.json">/v1/attribution.json</a></pre>`
     )
   ]);

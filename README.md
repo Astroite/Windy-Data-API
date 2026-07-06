@@ -32,12 +32,15 @@ CDN: /v1/meta.json /v1/grid-wide.json /v1/grid-fine.json /v1/storms.json
 `.om` 文件（`data_spatial/<model>/<run>/<timestamp>.om`，内含全部变量，维度 `[ny,nx]`）。
 风存 u/v 分量，speed/dir 由本流水线换算（与 Open-Meteo API 同约定：dir 为风的来向）。
 
-发布两层固定网格（客户端按视图裁剪，近岸细、远海粗）：
+发布两层固定网格（客户端按视图选层并裁剪子网格；域尺寸按 Web Mercator 视图跨度设计：
+1920px 宽屏在 zoom 5 约横跨 84° 经度，加 20% padding 后 ~118°，所以默认区域视图由
+global 层服务，zoom ≥ 6 才落进 wide 层。**客户端 `js/weather/api-snapshot.js` 里的层常量
+必须与此表一致**）：
 
 | 文件 | 范围 | 步长 | 点数 |
 |---|---|---|---|
-| `grid-wide.json` | lat 0–45, lon 100–160 | 1.0° | 46×61 = 2806 |
-| `grid-fine.json` | lat 15–30, lon 105–125 | 0.5° | 31×41 = 1271 |
+| `grid-global.json` | lat −60–70, 全经度（无重复列，客户端取模回绕） | 2.5° | 53×144 = 7632 |
+| `grid-wide.json` | lat −15–50, lon 75–180 | 1.0° | 66×106 = 6996 |
 
 每个网格文件的时间覆盖 = 当前整点 −1h 到 +6h（对齐客户端 `pastHours`/`forecastHours`），
 `series` 与客户端 `WW.openMeteo.fetchGrid` 返回值同构（row-major，行=纬度从南到北，
