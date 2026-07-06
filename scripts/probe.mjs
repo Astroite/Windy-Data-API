@@ -45,7 +45,8 @@ globalThis.fetch = async (input, init) => {
   stats.requests++;
   if (range) stats.ranged++;
   const res = await realFetch(input, init);
-  const len = Number(res.headers.get("content-length")) || 0;
+  const isHead = init && init.method === "HEAD";
+  const len = isHead ? 0 : Number(res.headers.get("content-length")) || 0;
   stats.bytes += len;
   console.log(
     `    [http] ${res.status}${range ? " range=" + range : ""}${len ? " " + (len / 1024).toFixed(1) + "KiB" : ""} ...${url.slice(-72)}`
@@ -118,6 +119,26 @@ try {
   const u = await findVariable(reader, "wind_u_component_10m");
   const ubox = await readVariableBox(u, { start: iy, end: iy + 1 }, { start: ix, end: ix + 1 });
   console.log(`    wind_u_component_10m @HK: ${ubox[0].toFixed(2)} m/s`);
+
+  /* 5b. realistic cost: full wide-grid box (lat 0..45, lon 100..160) for one variable */
+  console.log("\n[5b] wide-domain box read (realistic per-variable per-timestep cost)");
+  const before = { ...(reader.__backend ? reader.__backend.stats : { requests: 0, bytes: 0 }) };
+  const r0 = nearestIndex(0, src.lat0, src.dy, src.ny);
+  const r1 = nearestIndex(45, src.lat0, src.dy, src.ny) + 1;
+  const c0 = nearestIndex(100, src.lon0, src.dx, src.nx);
+  const c1 = nearestIndex(160, src.lon0, src.dx, src.nx) + 1;
+  const wideBox = await readVariableBox(temp, { start: r0, end: r1 }, { start: c0, end: c1 });
+  const finite = wideBox.reduce((n, v) => n + (Number.isFinite(v) ? 1 : 0), 0);
+  if (reader.__backend) {
+    const d = {
+      requests: reader.__backend.stats.requests - before.requests,
+      bytes: reader.__backend.stats.bytes - before.bytes
+    };
+    console.log(
+      `    box ${r1 - r0}x${c1 - c0} = ${wideBox.length} cells, finite ${((finite / wideBox.length) * 100).toFixed(1)}%, ` +
+        `${d.requests} range requests, ${(d.bytes / 1048576).toFixed(2)}MiB`
+    );
+  }
 } catch (e) {
   fail("dims/read", e);
 }

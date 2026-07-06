@@ -81,10 +81,88 @@ export function timestepUrl(model, referenceMs, timeMs) {
   return `${S3_BASE}/data_spatial/${model}/${runPath(referenceMs)}/${timestampName(timeMs)}.om`;
 }
 
+/* The stock MemoryHttpBackend downloads whole files (~37 MiB per gfs013 timestep,
+ * measured 2026-07-06, and twice at that). OM files are chunked precisely so that
+ * partial reads work, and S3 supports Range — so we bring our own backend:
+ * block-aligned Range GETs with an in-memory cache, contiguous misses coalesced
+ * into a single request. Implements the OmFileReaderBackend interface
+ * (getBytes/count/close) from @openmeteo/file-reader. */
+const BLOCK = 128 * 1024;
+
+export class RangeHttpBackend {
+  constructor(url) {
+    this.url = url;
+    this._size = null;
+    this._blocks = new Map(); // blockIndex -> Uint8Array(BLOCK)
+    this.stats = { requests: 0, bytes: 0 };
+  }
+
+  async count(signal) {
+    if (this._size === null) {
+      const res = await fetch(this.url, { method: "HEAD", signal });
+      if (!res.ok) throw new Error(`HEAD ${this.url} -> HTTP ${res.status}`);
+      const len = Number(res.headers.get("content-length"));
+      if (!Number.isFinite(len) || len <= 0) throw new Error("no content-length for " + this.url);
+      this._size = len;
+    }
+    return this._size;
+  }
+
+  async _fetchBlocks(first, last, signal) {
+    const size = await this.count(signal);
+    const from = first * BLOCK;
+    const to = Math.min(size, (last + 1) * BLOCK) - 1;
+    const res = await fetch(this.url, { headers: { Range: `bytes=${from}-${to}` }, signal });
+    if (res.status !== 206 && res.status !== 200) throw new Error(`GET ${this.url} range -> HTTP ${res.status}`);
+    let buf = new Uint8Array(await res.arrayBuffer());
+    if (res.status === 200) buf = buf.slice(from, to + 1); // server ignored Range
+    this.stats.requests++;
+    this.stats.bytes += buf.length;
+    for (let b = first; b <= last; b++) {
+      const off = (b - first) * BLOCK;
+      this._blocks.set(b, buf.subarray(off, Math.min(off + BLOCK, buf.length)));
+    }
+  }
+
+  async getBytes(offset, size, signal) {
+    const total = await this.count(signal);
+    if (offset + size > total) size = total - offset;
+    const first = Math.floor(offset / BLOCK);
+    const last = Math.floor((offset + size - 1) / BLOCK);
+    let runStart = -1;
+    for (let b = first; b <= last; b++) {
+      const missing = !this._blocks.has(b);
+      if (missing && runStart < 0) runStart = b;
+      if (!missing && runStart >= 0) {
+        await this._fetchBlocks(runStart, b - 1, signal);
+        runStart = -1;
+      }
+    }
+    if (runStart >= 0) await this._fetchBlocks(runStart, last, signal);
+
+    const out = new Uint8Array(size);
+    let written = 0;
+    for (let b = first; b <= last; b++) {
+      const block = this._blocks.get(b);
+      const from = b === first ? offset - b * BLOCK : 0;
+      const len = Math.min(block.length - from, size - written);
+      out.set(block.subarray(from, from + len), written);
+      written += len;
+    }
+    return out;
+  }
+
+  async close() {
+    this._blocks.clear();
+  }
+}
+
 export async function openOm(url) {
-  const { OmFileReader, MemoryHttpBackend } = await om();
-  const backend = new MemoryHttpBackend({ url });
-  return OmFileReader.create(backend);
+  const { OmFileReader } = await om();
+  const backend = new RangeHttpBackend(url);
+  const reader = await OmFileReader.create(backend);
+  reader.__backend = backend; // expose for stats/diagnostics
+  return reader;
 }
 
 export async function listChildren(reader) {
