@@ -1,0 +1,17 @@
+{
+  "name": "windy-data-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Typhoon Watch weather snapshot pipeline: reads Open-Meteo AWS open data (s3://openmeteo) + GDACS, publishes static JSON to EdgeOne Pages",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "probe": "node scripts/probe.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@openmeteo/file-reader": "^0.0.15"
+  }
+}

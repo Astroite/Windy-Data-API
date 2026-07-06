@@ -1,0 +1,35 @@
+# 定时触发 EO Pages 重新构建。
+#
+# 机制：EO Pages 项目的 production 分支绑定 `deploy`；本 workflow 每 2 小时把
+# 「main 的 HEAD + 一个空提交」force-push 到 deploy，EO Pages 收到 push 即重新
+# 构建（构建命令见 edgeone.json，抓取全部发生在 EO 构建机上）。force-push 让
+# deploy 分支永远只比 main 多一个提交，仓库历史不会膨胀；同时这个定期提交也
+# 避免了 GitHub「公共仓库 60 天无活动自动禁用定时 workflow」的规则。
+#
+# 频率预算：EO Pages 免费版构建 500 次/月；每 2 小时一次 = 360 次/月，
+# 剩余 ~140 次留给开发期的手动触发与代码推送。不要加密到每小时（720 次/月会爆）。
+name: tick
+
+on:
+  schedule:
+    - cron: "23 */2 * * *" # 每 2 小时,错开整点避开 GitHub cron 高峰延迟
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tick
+  cancel-in-progress: false
+
+jobs:
+  trigger-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Force-push tick commit to deploy branch
+        run: |
+          git config user.name "tick-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -m "tick: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git push --force origin HEAD:deploy
