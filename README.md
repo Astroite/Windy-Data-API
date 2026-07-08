@@ -15,7 +15,7 @@ EO Pages（production 分支 = deploy）收到 push → 构建
    │  edgeone.json: buildCommand = npm run build（scripts/build.mjs 在 EO 构建机上抓数据）
    │  上游失败 → exit 1 → 构建失败 → 上一次成功部署继续在线（宁可旧数据不发空数据）
    ▼
-CDN: /v1/meta.json /v1/grid-wide.json /v1/grid-fine.json /v1/storms.json
+CDN: /v1/meta.json /v1/grid-global.json /v1/grid-wide.json /v1/storms.json
    ▼
 壁纸客户端（Wallpaper Engine / 浏览器 / Tauri）：
    读快照 → 裁剪出自己视图的子网格；快照过期(>6h)或视图超出覆盖范围 → 回退直连 Open-Meteo API / GDACS
@@ -60,7 +60,9 @@ global 层服务，zoom ≥ 6 才落进 wide 层。**客户端 `js/weather/api-s
 
 `storms.json` 是 GDACS 台风列表 + 轨迹的解析结果（结构与壁纸仓库
 `js/weather/api-gdacs.js` 中 `WW.gdacs.fetchStorms` 的 resolve 值一致；解析逻辑是它的
-Node 移植，两边改动需同步）。全球全量不做 bbox 过滤，客户端自行按视图筛选。
+Node 移植，两边改动需同步）。全球全量不做 bbox 过滤，客户端自行按视图筛选。每个
+storm 带 `lastActiveAt` 与 `updatedAt`（毫秒），文件顶层带 `generatedAt`（快照生成秒）
+与 `updatedAt`（GDACS 响应时间秒），用于客户端判断快照新鲜度并过滤陈旧台风。
 GDACS 失败不阻塞天气发布：`ok: false` 表示本轮降级，客户端应改走直连。
 
 ## 本地开发
@@ -113,9 +115,10 @@ npx http-server dist -p 8080   # 本地预览
 - 依赖 `@openmeteo/file-reader` 为 **GPL-2.0**——只影响本流水线仓库（本就开源），
   不影响壁纸客户端（客户端只消费 JSON）。
 
-## 客户端对接（壁纸仓库侧，待做）
+## 客户端对接（壁纸仓库侧）
 
-- 新增 `js/weather/api-snapshot.js`：拉 `meta.json` → 按视图选 fine/wide → 裁剪子网格
-  喂给现有 `WW.grid.assemble`；
-- `refreshWeather`/`refreshStorms` 改为快照优先，过期/越界/失败回退现有直连路径；
-- `WW.config.net` 增加 `snapshotBase` 与过期阈值。
+- `js/weather/api-snapshot.js` 按视图选 global/wide → 裁剪子网格喂给现有
+  `WW.grid.assemble`；
+- `refreshWeather`/`refreshStorms` 快照优先，过期/越界/失败回退现有直连路径；
+- 台风快照按整份 `/v1/storms.json` 缓存，任务层再按当前视图 bbox 过滤并缓存结果；
+- `WW.config.net.snapshotBase` 指向本服务，`snapshotMaxAgeMin` 控制快照超龄回退。

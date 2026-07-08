@@ -7,8 +7,8 @@
  *
  * Output (all consumed by the wallpaper client, see README for the schema contract):
  *   dist/v1/meta.json         run/generatedAt/index of files
- *   dist/v1/grid-wide.json    1.0 deg, lat 0..45, lon 100..160  (whole West Pacific stage)
- *   dist/v1/grid-fine.json    0.5 deg, lat 15..30, lon 105..125 (near-shore gameplay zone)
+ *   dist/v1/grid-global.json  2.5 deg, lat -60..70, full longitude
+ *   dist/v1/grid-wide.json    1.0 deg, lat -15..50, lon 75..180
  *   dist/v1/storms.json       parsed GDACS tropical cyclones (same shape as WW.gdacs.fetchStorms)
  *   dist/v1/attribution.json
  */
@@ -34,6 +34,7 @@ const PAST_HOURS = 1; // mirrors WW.config.grid.pastHours
 const FORECAST_HOURS = 6; // mirrors WW.config.grid.forecastHours
 const HOUR = 3600000;
 const MIN_FINITE_RATIO = 0.98;
+const STORM_ACTIVE_MAX_AGE_HOURS = Number(process.env.GDACS_ACTIVE_MAX_AGE_HOURS || 48);
 
 // Snapshot grids consumed by the client (row-major: rows lat south->north, cols lon west->east,
 // matching WW.grid points()). Domains sized for Web Mercator view spans: a 1920px window at
@@ -186,8 +187,28 @@ const GDACS_LIST = "https://www.gdacs.org/gdacsapi/api/events/geteventlist/MAP?e
 
 function parseDate(v) {
   if (!v) return NaN;
-  const t = Date.parse(v);
+  let s = String(v).trim();
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(s)) s += "Z";
+  const t = Date.parse(s);
   return isNaN(t) ? NaN : t;
+}
+
+function latestActivityDate(props) {
+  let latest = NaN;
+  for (const key of ["trackdate", "todate", "polygondate", "eventdate", "fromdate"]) {
+    const t = parseDate(props[key]);
+    if (!isNaN(t) && (isNaN(latest) || t > latest)) latest = t;
+  }
+  return latest;
+}
+
+function stormActiveMaxAgeMs() {
+  return Math.max(1, STORM_ACTIVE_MAX_AGE_HOURS || 48) * HOUR;
+}
+
+function freshActivity(lastActiveAt, updatedAt) {
+  if (isNaN(lastActiveAt)) return false;
+  return updatedAt - lastActiveAt <= stormActiveMaxAgeMs();
 }
 
 function firstDate(props) {
@@ -255,13 +276,23 @@ function parseGeometry(fc, storm) {
 }
 
 async function buildStorms() {
-  const fc = await fetchJson(GDACS_LIST);
+  const res = await fetch(GDACS_LIST);
+  const serverUpdatedAt = parseDate(res.headers.get("date"));
+  if (!res.ok) throw new Error(`GET ${GDACS_LIST} -> HTTP ${res.status}`);
+  const fc = await res.json();
+  const updatedAt = isNaN(serverUpdatedAt) || !serverUpdatedAt ? Date.now() : serverUpdatedAt;
   const events = {};
+  let skippedStale = 0;
   for (const f of fc.features || []) {
     const p = f.properties || {};
     if (p.eventtype !== "TC" || String(p.iscurrent) === "false") continue;
     const g = f.geometry;
     if (!g || g.type !== "Point") continue;
+    const lastActiveAt = latestActivityDate(p);
+    if (!freshActivity(lastActiveAt, updatedAt)) {
+      skippedStale++;
+      continue;
+    }
     const id = p.eventid;
     if (events[id]) continue;
     events[id] = {
@@ -273,14 +304,16 @@ async function buildStorms() {
       windKmh: (p.severitydata && p.severitydata.severity) || 0,
       alertlevel: p.alertlevel || "Green",
       geometryUrl: p.url && p.url.geometry,
+      lastActiveAt,
+      updatedAt,
       history: [],
       forecast: [],
       trackLines: []
     };
   }
   const storms = Object.values(events);
-  console.log(`[storms] ${storms.length} active TC worldwide`);
-  return Promise.all(
+  console.log(`[storms] ${storms.length} active TC worldwide` + (skippedStale ? `, ${skippedStale} stale skipped` : ""));
+  const items = await Promise.all(
     storms.map(async (storm) => {
       const { geometryUrl, ...rest } = storm;
       if (!geometryUrl) return rest;
@@ -293,20 +326,23 @@ async function buildStorms() {
       }
     })
   );
+  return { storms: items, updatedAt };
 }
 
 /* ---------- output ---------- */
 async function main() {
   const weather = await buildWeather();
 
-  let storms = { ok: false, storms: [] };
+  let storms = { ok: false, updatedAt: 0, storms: [] };
   try {
-    storms = { ok: true, storms: await buildStorms() };
+    storms = { ok: true, ...(await buildStorms()) };
   } catch (e) {
     console.warn(`[storms] degraded (${e.message}); publishing empty list with ok:false`);
   }
 
   await mkdir("dist/v1", { recursive: true });
+  const stormsGeneratedAt = Math.floor(Date.now() / 1000);
+  const stormsUpdatedAt = Math.floor((storms.updatedAt || stormsGeneratedAt * 1000) / 1000);
   const meta = {
     schemaVersion: SCHEMA_VERSION,
     generatedAt: weather.generatedAt,
@@ -325,7 +361,8 @@ async function main() {
     write("grid-wide.json", weather.files.wide),
     write("storms.json", {
       schemaVersion: SCHEMA_VERSION,
-      generatedAt: Math.floor(Date.now() / 1000),
+      generatedAt: stormsGeneratedAt,
+      updatedAt: stormsUpdatedAt,
       ok: storms.ok,
       storms: storms.storms
     }),
