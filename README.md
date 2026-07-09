@@ -8,10 +8,10 @@
 ## 架构
 
 ```
-GitHub 本仓库（只有流程文件，不存数据）
-   │  .github/workflows/tick.yml：每 2h 把 main HEAD + 空提交 force-push 到 deploy 分支
+Cloudflare Worker（cron-worker/，只管定时，不存数据）
+   │  cron 每 2h → POST EdgeOne 部署钩子（钩子绑定 main）
    ▼
-EO Pages（production 分支 = deploy）收到 push → 构建
+EO Pages（production 分支 = main）收到钩子 → 构建
    │  edgeone.json: buildCommand = npm run build（scripts/build.mjs 在 EO 构建机上抓数据）
    │  上游失败 → exit 1 → 构建失败 → 上一次成功部署继续在线（宁可旧数据不发空数据）
    ▼
@@ -21,8 +21,10 @@ CDN: /v1/meta.json /v1/grid-global.json /v1/grid-wide.json /v1/storms.json
    读快照 → 裁剪出自己视图的子网格；快照过期(>6h)或视图超出覆盖范围 → 回退直连 Open-Meteo API / GDACS
 ```
 
-- **deploy 分支永远只比 main 多一个空提交**（force-push 重置），历史不膨胀；
-  定期提交同时规避 GitHub「公共仓库 60 天无活动禁用定时 workflow」。
+- **定时器用 Cloudflare Worker Cron Triggers**（代码见 `cron-worker/worker.js`，因含无鉴权
+  钩子未入库），不用 GitHub Actions 的 `schedule`——后者是 best-effort，高峰常延迟/跳过。
+  Worker cron 准时且不依赖仓库活跃度，因此不再需要 `deploy` 分支 / 空提交 / force-push。
+  构建直接打在 `main` 上。
 - **构建次数预算**：EO Pages 免费版 500 次/月；每 2h 一次 = 360 次/月，余量留给开发。
 - **上游配额**：AWS 开放数据桶免账号、免出口流量费、无调用限制；GDACS 无配额。
 
@@ -97,16 +99,19 @@ npx http-server dist -p 8080   # 本地预览
 
 ## EO Pages 控制台配置（一次性）
 
-1. EO Pages 控制台 → 创建项目 → 关联本仓库；**production 分支选 `deploy`**（先在 Actions
-   页手动 Run 一次 tick workflow 生成该分支，或本地 `git push origin main:deploy`）。
+1. EO Pages 控制台 → 创建项目 → 关联本仓库；**production 分支选 `main`**。
 2. 构建配置自动读取 `edgeone.json`（installCommand/buildCommand/outputDirectory/headers），
    Node 版本用默认 22 即可。
-3. 首次部署后验证：
+3. **项目设置 → 部署钩子 → 新建**，分支选 `main`，复制生成的 URL（无鉴权，勿入库）。
+4. 部署定时器：Cloudflare 控制台 → Workers & Pages → Create Worker → 在线编辑器粘贴
+   `cron-worker/worker.js`（钩子 URL 已写死在其中）→ Deploy → Settings 里加 Cron Trigger
+   `23 */2 * * *`（UTC）。`cron-worker/worker.js` 因含无鉴权钩子已被 `.gitignore` 排除，不入库。
+5. 首次部署后验证：
    - `https://<项目域名>/v1/meta.json` 返回 JSON 且 `generatedAt` 是最近时间；
    - 响应头包含 `Access-Control-Allow-Origin: *`（壁纸在 CEF/WebView2 里 Origin 为 null，
      没有它客户端全部读不到）与 `Cache-Control: public, max-age=600`。
-4. Actions 页确认 tick 定时在跑、EO 侧构建成功。
-5. （可选）绑定自定义域名；国内 CDN 加速需要 ICP 备案，默认 `*.edgeone.app` 域名走海外节点。
+6. Cloudflare Worker 的 Logs / Observability 里确认到点触发（`已触发构建`）、EO 侧构建成功。
+7. （可选）绑定自定义域名；国内 CDN 加速需要 ICP 备案，默认 `*.edgeone.app` 域名走海外节点。
 
 ## 许可与署名
 
