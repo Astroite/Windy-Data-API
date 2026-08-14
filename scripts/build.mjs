@@ -183,7 +183,7 @@ async function buildWeather() {
 
 /* ---------- GDACS storms (port of js/weather/api-gdacs.js in the wallpaper repo; ----------
  * ---------- keep the output shape identical to WW.gdacs.fetchStorms resolution)  ---------- */
-const GDACS_LIST = "https://www.gdacs.org/gdacsapi/api/events/geteventlist/MAP?eventtypes=TC";
+const GDACS_LIST = "https://www.gdacs.org/gdacsapi/api/events/geteventlist/MAP?eventtype=TC";
 
 function parseDate(v) {
   if (!v) return NaN;
